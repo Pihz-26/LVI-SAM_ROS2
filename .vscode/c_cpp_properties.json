@@ -6,16 +6,13 @@
         "limitSymbolsToIncludedHeaders": false
       },
       "includePath": [
-        "/opt/ros/humble/include/**",
-        "/home/ubt2204/CODE/LVI-SAM_ROS2/src/LIO-SAM_MID360_ROS2/include/**",
-        "/home/ubt2204/CODE/LVI-SAM_ROS2/src/pointcloud_localization/include/**",
-        "/usr/include/**"
+        "${workspaceFolder}/**"
       ],
-      "name": "ros2",
-      "intelliSenseMode": "gcc-x64",
-      "compilerPath": "/usr/bin/gcc",
-      "cStandard": "gnu11",
-      "cppStandard": "c++17"
+      "name": "linux-clang-x64",
+      "intelliSenseMode": "linux-clang-x64",
+      "compilerPath": "clang",
+      "cStandard": "${default}",
+      "cppStandard": "${default}"
     }
   ],
   "version": 4
