@@ -193,10 +193,20 @@ bool PointCloudLocalization::localize(
     return false;
   }
 
-  RCLCPP_INFO(this->get_logger(), "Final fitness score: %.3f", fine_localizer_->getFitnessScore());
-  RCLCPP_INFO(this->get_logger(), "Cost time: %.2fs", 
+  if (fine_localizer_->getFitnessScore() < 0.01) {
+    RCLCPP_INFO(this->get_logger(), "Final fitness score: %.3f", fine_localizer_->getFitnessScore());
+    RCLCPP_INFO(this->get_logger(), "Cost time: %.2fs", 
             (this->now() - start_time).seconds());
-  return true;
+    return true;
+  } else {
+    RCLCPP_INFO(this->get_logger(), "Final fitness score: %.3f, Please give a better Pose", fine_localizer_->getFitnessScore());
+    RCLCPP_INFO(this->get_logger(), "Cost time: %.2fs", 
+            (this->now() - start_time).seconds());
+    return false;
+  }
+  
+
+  
 }
 
 // 发布TF变换

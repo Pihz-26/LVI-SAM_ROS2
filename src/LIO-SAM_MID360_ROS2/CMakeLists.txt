@@ -36,18 +36,13 @@ find_package(livox_ros_driver2 REQUIRED)
 find_package(CUDA REQUIRED)
 
 
-if (CUDA_FOUND)
-    set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "The CUDA architectures to build for")  
-    message(STATUS "CUDA ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
-endif()
+# if (CUDA_FOUND)
+#     set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "The CUDA architectures to build for")  
+#     message(STATUS "CUDA ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
+# endif()
 
-enable_language(CUDA)
+# enable_language(CUDA)
 
-
-# 将cuda加速的 KD tree 路径加入为子目录
-add_subdirectory("../../ThirdParty/cudaKDTree" "${CMAKE_BINARY_DIR}/cudaKDTree-build")
-
-get_target_property(CUKD_INCLUDE_DIRS cudaKDTree INTERFACE_INCLUDE_DIRECTORIES)
 
 
 include_directories(
@@ -77,14 +72,13 @@ target_link_libraries(${PROJECT_NAME}_transformFusion gtsam "${cpp_typesupport_t
 
 
 
-add_executable(${PROJECT_NAME}_mapOptimization src/mapOptmization.cu)
+add_executable(${PROJECT_NAME}_mapOptimization src/mapOptmization.cpp)
 ament_target_dependencies(${PROJECT_NAME}_mapOptimization rclcpp rclpy std_msgs sensor_msgs geometry_msgs nav_msgs pcl_conversions pcl_msgs visualization_msgs tf2 tf2_ros tf2_eigen tf2_sensor_msgs tf2_geometry_msgs OpenCV PCL GTSAM livox_ros_driver2)
 if (OpenMP_CXX_FOUND)
-  target_link_libraries(${PROJECT_NAME}_mapOptimization gtsam "${cpp_typesupport_target}" OpenMP::OpenMP_CXX cudaKDTree)
+  target_link_libraries(${PROJECT_NAME}_mapOptimization gtsam "${cpp_typesupport_target}" OpenMP::OpenMP_CXX )
 else()
-  target_link_libraries(${PROJECT_NAME}_mapOptimization gtsam "${cpp_typesupport_target}" cudaKDTree)
+  target_link_libraries(${PROJECT_NAME}_mapOptimization gtsam "${cpp_typesupport_target}" )
 endif()
-target_include_directories(${PROJECT_NAME}_mapOptimization PRIVATE ${CUKD_INCLUDE_DIRS} ${CUDA_INCLUDE_DIRS})
 
 
 install(

@@ -17,10 +17,6 @@
 #include <gtsam/nonlinear/ISAM2.h>
 
 
-#include <cuda_runtime.h>
-#include <cukd/builder.h>
-#include <cukd/knn.h>
-
 
 using namespace gtsam;
 
@@ -29,7 +25,6 @@ using symbol_shorthand::V; // Vel   (xdot,ydot,zdot)
 using symbol_shorthand::B; // Bias  (ax,ay,az,gx,gy,gz)
 using symbol_shorthand::G; // GPS pose
 
-#define KD_CUDA 0
 /*
     * A point cloud type that has 6D pose info ([x,y,z,roll,pitch,yaw] intensity is time stamp)
     */
@@ -52,187 +47,6 @@ POINT_CLOUD_REGISTER_POINT_STRUCT (PointXYZIRPYT,
 
 typedef PointXYZIRPYT  PointTypePose;
 
-// ===============================CUDA KD Tree Function Start========================
-#if KD_CUDA==1
-
-#define FIXED_K 20000   // 一般找点设置为3000,所以此处部分同步设计为3000
-using data_traits = cukd::default_data_traits<float3>;
-float3* d_points_corner = nullptr;
-float3* d_points_surf = nullptr;
-cukd::SpatialKDTree<float3, data_traits> cornerKDTree;
-cukd::SpatialKDTree<float3, data_traits> surfKDTree;
-
-
-
-void initKDTree(const float3* pointsCorner, int numPointsCorner,
-                const float3* pointsSurf, int numPointsSurf) 
-{
-    // 用于构建 K-D 树的配置，通常保持默认即可
-    cukd::BuildConfig buildConfig{};
-    
-    // 1. 分配 GPU 托管内存并拷贝角点数据
-    cudaMallocManaged(&d_points_corner, numPointsCorner * sizeof(float3));
-    cudaMemcpy(d_points_corner, pointsCorner, numPointsCorner * sizeof(float3), cudaMemcpyHostToDevice);
-
-    // 2. 使用 d_points_corner 构建角点 K-D 树
-    buildTree(cornerKDTree, d_points_corner, numPointsCorner, buildConfig);
-    
-    // 1. 分配 GPU 托管内存并拷贝平面点数据
-    cudaMallocManaged(&d_points_surf, numPointsSurf * sizeof(float3));
-    cudaMemcpy(d_points_surf, pointsSurf, numPointsSurf * sizeof(float3), cudaMemcpyHostToDevice);
-
-    // 2. 使用 d_points_surf 构建平面点 K-D 树
-    buildTree(surfKDTree, d_points_surf, numPointsSurf, buildConfig);
-    
-    // 确保构建完成
-    CUKD_CUDA_SYNC_CHECK();
-    // cudaDeviceSynchronize();
-}
-
-
-// CUDA KNN Kernel
-__global__ void KnnKernel(
-    const float3* d_queries, int numQueries,
-    const cukd::SpatialKDTree<float3, data_traits> tree,
-    float3* d_results, int k, float radius)
-{
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    if (tid >= numQueries) return;
-
-    cukd::HeapCandidateList<FIXED_K> result(radius); // Fixed at 16, for generalization make template
-
-    cukd::stackBased::knn<decltype(result), float3, data_traits>
-      (result, tree, d_queries[tid]);
-
-    for (int i = 0; i < k; i++) {
-      int ID = result.get_pointID(i);
-      d_results[tid * k + i]
-        = ID < 0
-        ? make_float3(0.f,0.f,0.f)
-        : tree.data[ID];
-    }
-}
-
-
-
-
-float3* pcl_to_float3(const pcl::PointCloud<PointType>::Ptr& pcl_cloud) {
-    if (!pcl_cloud || pcl_cloud->empty()) {
-        return nullptr;
-    }
-
-    // 1. 在 CPU 堆内存上分配空间
-    size_t numPoints = pcl_cloud->size();
-    float3* float3_array = new float3[numPoints];
-
-    // 2. 遍历 PCL 点云并转换数据
-    for (size_t i = 0; i < numPoints; ++i) {
-        const PointType& p = pcl_cloud->points[i];
-        
-        // 提取 X, Y, Z 坐标，并丢弃强度 I
-        float3_array[i] = make_float3(p.x, p.y, p.z);
-    }
-
-    return float3_array;
-}
-
-
-void float3_to_pcl(
-    const float3* neighbors_array, 
-    int numQueries, 
-    int k,
-    pcl::PointCloud<PointType>::Ptr pcl_cloud) 
-{
-    // 创建新的 PCL 点云对象
-    pcl_cloud->clear();
-
-    // 遍历整个结果数组
-    for (int q = 0; q < numQueries; ++q) {
-        for (int i = 0; i < k; ++i) {
-            // 计算当前点的索引
-            int index = q * k + i;
-            const float3& p = neighbors_array[index];
-
-            // 检查点是否为有效邻居
-            // 方法一 (稳健)：检查 x, y, z 是否有一个是非零的（即它不是占位符）
-            const float eps = 1e-6f;
-            // if (fabs(p.x) > eps || fabs(p.y) > eps || fabs(p.z) > eps) {
-            // 方法二 (简单，假设占位符严格为 0.0f)：
-            if (p.x != 0.f || p.y != 0.f || p.z != 0.f) {
-                PointType pcl_p;
-                pcl_p.x = p.x;
-                pcl_p.y = p.y;
-                pcl_p.z = p.z;
-                
-                // 注意：Intensity (I) 在 float3 中丢失了信息，此处通常设为默认值 (例如 0.0f, 1.0f)，但是这部分用于kd-tree搜索操作中 I 没有在后续中使用到
-                pcl_p.intensity = 0.0f; 
-
-                pcl_cloud->points.push_back(pcl_p);
-            }
-            else {
-                
-            }
-        }
-    }
-}
-
-void knnSearchCuda(const float3* queries, const int numQueries,
-                      const int k, const float radius, 
-                      pcl::PointCloud<PointType>::Ptr CornerFromMap,
-                      pcl::PointCloud<PointType>::Ptr SurfFromMap) {
-
-    float3* d_queries;
-    cudaMallocManaged(&d_queries, numQueries*sizeof(float3));
-    cudaMemcpy(d_queries, queries, numQueries*sizeof(float3), cudaMemcpyHostToDevice);
-
-    size_t resultSize = numQueries * k * sizeof(float3);
-
-    float3* d_results_corner;
-    cudaMallocManaged(&d_results_corner, resultSize);
-    cudaMemset(d_results_corner, 0, resultSize); 
-
-    float3* d_results_surf;
-    cudaMallocManaged(&d_results_surf, resultSize);
-    cudaMemset(d_results_surf, 0, resultSize);
-    cudaDeviceSynchronize();
-
-    int threadsPerBlock = 256;
-    int numBlocks = (numQueries + threadsPerBlock - 1) / threadsPerBlock;
-
-    KnnKernel<<<numBlocks, threadsPerBlock>>>(
-        d_queries, numQueries, 
-        cornerKDTree,        // 使用角点 K-D 树
-        d_results_corner, k, radius);
-
-    KnnKernel<<<numBlocks, threadsPerBlock>>>(
-        d_queries, numQueries, 
-        surfKDTree,           // 使用平面点 K-D 树
-        d_results_surf, k, radius);
-    cudaDeviceSynchronize();
-
-    // 查寻点转移到host上
-    float3* neighbors_corner = new float3[numQueries * k];
-    cudaMemcpy(neighbors_corner, d_results_corner, resultSize, cudaMemcpyDeviceToHost);
-    
-    float3* neighbors_surf = new float3[numQueries * k];
-    cudaMemcpy(neighbors_surf, d_results_surf, resultSize, cudaMemcpyDeviceToHost);
-    cudaDeviceSynchronize();
-
-    // 释放cuda缓存
-    cudaFree(d_queries);
-    cudaFree(d_results_corner);
-    cudaFree(d_results_surf);
-
-    float3_to_pcl(neighbors_corner, numQueries, k, CornerFromMap);
-    float3_to_pcl(neighbors_surf, numQueries, k, SurfFromMap);
-
-    delete[] neighbors_corner;
-    delete[] neighbors_surf;
-    
-}
-
-# endif
-// ===============================CUDA KD Tree Function End========================
 
 class mapOptimization : public ParamServer
 {
@@ -357,11 +171,9 @@ public:
     pcl::PointCloud<PointType>::Ptr laserCloudFull;
     pcl::VoxelGrid<PointType> map_filter;
     
-    // 重定位中的 KDTree查询，目前改用cuda进行操作，更快
-#if KD_CUDA==0
     pcl::KdTreeFLANN<PointType>::Ptr cornerKDTree;
     pcl::KdTreeFLANN<PointType>::Ptr surfKDTree;   
-#endif
+
 
 
     mapOptimization(const rclcpp::NodeOptions & options) : ParamServer("lio_sam_mapOptimization", options)
@@ -520,10 +332,10 @@ public:
     }
 
     void reLocationInitial() {
-        #if KD_CUDA==0
+
         cornerKDTree.reset(new pcl::KdTreeFLANN<PointType>());
         surfKDTree.reset(new pcl::KdTreeFLANN<PointType>());
-        #endif
+
         surf_points_map.reset(new pcl::PointCloud<PointType>());
         corner_points_map.reset(new pcl::PointCloud<PointType>());
         global_points_map.reset(new pcl::PointCloud<PointType>());
@@ -918,8 +730,8 @@ public:
 
     void loopClosureThread()
     {
-        if (loopClosureEnableFlag == false || reLocalization == true)
-            return;
+        // if (loopClosureEnableFlag == false || reLocalization == true)
+        //     return;
 
         rclcpp::Rate rate(loopClosureFrequency);
         while (rclcpp::ok())
@@ -1207,18 +1019,10 @@ public:
         pcl::transformPointCloud(*surf_points_map, *surf_points_map, T_map_odom_.inverse().cast<float>());
         pcl::transformPointCloud(*corner_points_map, *corner_points_map, T_map_odom_.inverse().cast<float>());
         *global_points_map = *surf_points_map + *corner_points_map;
-    #if KD_CUDA == 0
+
         cornerKDTree->setInputCloud(corner_points_map);
         surfKDTree->setInputCloud(surf_points_map);
-    #else
-        float3* cornerPointsf3 = pcl_to_float3(corner_points_map);
-        float3* surfPointsf3 = pcl_to_float3(surf_points_map);
-        initKDTree(cornerPointsf3, corner_points_map->size(),
-                surfPointsf3, surf_points_map->size()) ;
-        RCLCPP_INFO(this->get_logger(), "Finished Initialize For CUDA KD Tree");
-        delete[] cornerPointsf3;
-        delete[] surfPointsf3;
-    #endif
+
         // icp_map.setInputTarget(global_points_map);
 
     }
@@ -1308,7 +1112,7 @@ public:
 
     void extractNearby()
     {
-        if (!reLocalization) {
+        // if (!reLocalization) {
             pcl::PointCloud<PointType>::Ptr surroundingKeyPoses(new pcl::PointCloud<PointType>());
             pcl::PointCloud<PointType>::Ptr surroundingKeyPosesDS(new pcl::PointCloud<PointType>());
             std::vector<int> pointSearchInd;
@@ -1344,9 +1148,9 @@ public:
             }
 
             extractCloud(surroundingKeyPosesDS);
-        } else {
-            extractCloud();
-        }
+        // } else {
+        //     extractCloud();
+        // }
     }
 
     void extractCloud(pcl::PointCloud<PointType>::Ptr cloudToExtract)
@@ -1401,7 +1205,7 @@ public:
         currentPosition.y = transformTobeMapped[4];  // 当前y
         currentPosition.z = transformTobeMapped[5];  // 当前z
 
-    #if KD_CUDA == 0
+
         // ---------------------------- KD-Tree 半径搜索（角点）-------------------------
         std::vector<int> cornerPointIndices;
         std::vector<float> cornerPointDistances;
@@ -1424,14 +1228,7 @@ public:
         for (const auto& idx : surfPointIndices) {
             laserCloudSurfFromMap->push_back((*surf_points_map)[idx]);
         }
-    #elif KD_CUDA==1
-        RCLCPP_INFO(this->get_logger(), "Using CUDA for KD Tree");
-        float3 currentPositionF3 = make_float3(currentPosition.x, currentPosition.y, currentPosition.z);
-        knnSearchCuda(&currentPositionF3, 1,
-                      20000, pointSearchRadius, 
-                      laserCloudCornerFromMap,
-                      laserCloudSurfFromMap);
-    #endif
+    
         // ---------------------------- 降采样（保持原逻辑）-------------------------
         downSizeFilterCorner.setInputCloud(laserCloudCornerFromMap);
         downSizeFilterCorner.filter(*laserCloudCornerFromMapDS);
@@ -1864,11 +1661,10 @@ public:
 
                 if (LMOptimization(iterCount) == true)
                 {
-                    RCLCPP_INFO(this->get_logger(), "LMOptimization Successed in iter %d", iterCount);
                     break;     
                 }   
                 else {
-                    if (iterCount == 99) {
+                    if (iterCount == 20) {
                         RCLCPP_INFO(this->get_logger(), "LMOptimization Failed");
                     }
                 }      
@@ -2187,7 +1983,7 @@ public:
 
     void updatePath(const PointTypePose& pose_in)
     {
-        if (reLocalization) {
+        // if (reLocalization) {
             Eigen::Isometry3d T_odom_pose_ = Eigen::Isometry3d::Identity();
             T_odom_pose_.translation() << pose_in.x, pose_in.y, pose_in.z;
             Eigen::Matrix3d R = (   Eigen::AngleAxisd(pose_in.yaw, Eigen::Vector3d::UnitZ()) *
@@ -2214,22 +2010,22 @@ public:
             pose_stamped.pose.orientation.w = q.w();
 
             globalPath.poses.push_back(pose_stamped);
-        } else {
-            geometry_msgs::msg::PoseStamped pose_stamped;
-            pose_stamped.header.stamp = rclcpp::Time(pose_in.time * 1e9);
-            pose_stamped.header.frame_id = odometryFrame;
-            pose_stamped.pose.position.x = pose_in.x;
-            pose_stamped.pose.position.y = pose_in.y;
-            pose_stamped.pose.position.z = pose_in.z;
-            tf2::Quaternion q;
-            q.setRPY(pose_in.roll, pose_in.pitch, pose_in.yaw);
-            pose_stamped.pose.orientation.x = q.x();
-            pose_stamped.pose.orientation.y = q.y();
-            pose_stamped.pose.orientation.z = q.z();
-            pose_stamped.pose.orientation.w = q.w();
+        // } else {
+        //     geometry_msgs::msg::PoseStamped pose_stamped;
+        //     pose_stamped.header.stamp = rclcpp::Time(pose_in.time * 1e9);
+        //     pose_stamped.header.frame_id = odometryFrame;
+        //     pose_stamped.pose.position.x = pose_in.x;
+        //     pose_stamped.pose.position.y = pose_in.y;
+        //     pose_stamped.pose.position.z = pose_in.z;
+        //     tf2::Quaternion q;
+        //     q.setRPY(pose_in.roll, pose_in.pitch, pose_in.yaw);
+        //     pose_stamped.pose.orientation.x = q.x();
+        //     pose_stamped.pose.orientation.y = q.y();
+        //     pose_stamped.pose.orientation.z = q.z();
+        //     pose_stamped.pose.orientation.w = q.w();
 
-            globalPath.poses.push_back(pose_stamped);
-        }
+        //     globalPath.poses.push_back(pose_stamped);
+        // }
     }
 
     void publishOdometry()
