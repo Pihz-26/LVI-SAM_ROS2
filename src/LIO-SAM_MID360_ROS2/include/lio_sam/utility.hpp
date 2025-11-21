@@ -340,7 +340,7 @@ public:
         get_parameter("cornerMapPath", cornerMapPath);
         declare_parameter("surfMapPath", "/home/ubt2204/CODE/Datasets/save/0918/SurfMap.pcd");
         get_parameter("surfMapPath", surfMapPath);
-        declare_parameter("pointSearchRadius", 50); // 点云的搜索范围
+        declare_parameter("pointSearchRadius", 25); // 点云的搜索范围
         get_parameter("pointSearchRadius", pointSearchRadius);
         declare_parameter("maxMatchDistance", 1.0); // 这个是在map中特征点匹配的最大容忍尺寸，如果特征点匹配特征中，距离大于该值则否认该匹配。在标准方法中设置为1,但室内环境，尤其是重定位环境下，狭小空间有大量点云，对该匹配距离容忍度可能发生变化
         get_parameter("maxMatchDistance", maxMatchDistance);

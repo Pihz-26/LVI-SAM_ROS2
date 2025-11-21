@@ -102,6 +102,6 @@
     reLocalization: true
     cornerMapPath: "/home/ubt2204/CODE/Datasets/save/0918/CornerMap.pcd"
     surfMapPath: "/home/ubt2204/CODE/Datasets/save/0918/SurfMap.pcd"
-    pointSearchRadius: 20
+    pointSearchRadius: 15
     maxMatchDistance: 0.6
     matchRateThreshold: 0.5

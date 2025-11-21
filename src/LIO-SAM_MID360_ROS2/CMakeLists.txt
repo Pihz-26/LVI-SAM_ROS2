@@ -35,14 +35,17 @@ find_package(OpenMP REQUIRED)
 find_package(livox_ros_driver2 REQUIRED)
 find_package(CUDA REQUIRED)
 
-enable_language(CUDA)
+
 if (CUDA_FOUND)
-    set(CMAKE_CUDA_FLAGS "-arch=sm_75 -arch=sm_80 -arch=sm_89")  # 适配你的 GPU
-    message(STATUS "CUDA FOUND: ${CUDA_VERSION}")
+    set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "The CUDA architectures to build for")  
+    message(STATUS "CUDA ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
+enable_language(CUDA)
+
+
 # 将cuda加速的 KD tree 路径加入为子目录
-add_subdirectory("/home/ubt2204/CODE/ThirdParty/cudaKDTree" "${CMAKE_BINARY_DIR}/cudaKDTree-build")
+add_subdirectory("../../ThirdParty/cudaKDTree" "${CMAKE_BINARY_DIR}/cudaKDTree-build")
 
 get_target_property(CUKD_INCLUDE_DIRS cudaKDTree INTERFACE_INCLUDE_DIRECTORIES)
 
